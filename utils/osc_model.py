@@ -36,17 +36,29 @@ def get_raw_files():
         df = pd.DataFrame({'sampleid':names, 'minutes':times})
 
         return df
-  
-    path_raw = 'raw turbiscan data'
+    
+    if training:
+        path_raw = 'raw turbiscan data'
+    else:
+        path_raw = 'run files'
+        
     dir1 = os.listdir(path_raw)
     data = []
     
+    # Check each file in the directory to see if they are an excel or csv file and read those in, otherwise ignore.
     for fid in dir1:
         path = os.path.join(os.getcwd(), path_raw, fid)
-        df = pd.read_csv(path)
-        transmit = 1
-        back = 2
-        data.append(df)
+        if os.path.splitext(path)[-1] == '.xlsx':
+            df = pd.read_excel(path)
+        elif os.path.splitext(path)[-1] == '.csv':
+            df = pd.read_csv(path)
+        else:
+            df = None
+
+        if df is not None:
+            transmit = 1
+            back = 2
+            data.append(df)
 
     trans_data = [df.columns[transmit+3*i] for df in data for i in range(int(df.shape[1]/3))]
     back_data = [df.columns[back+3*i] for df in data for i in range(int(df.shape[1]/3))]
