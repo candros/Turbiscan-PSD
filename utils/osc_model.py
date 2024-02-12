@@ -1,100 +1,125 @@
 import pandas as pd
 from sklearn import metrics
 import pickle
-import os
+import os, shutil
 from sklearn.model_selection import train_test_split
 import scipy
 from sklearn.ensemble import ExtraTreesRegressor
 
-def get_raw_files(): 
+def clear_cache():
     '''
-    Collects all turbiscan files from the raw turbiscan data directory and parse out the transmission and backscattering data.
+    If the cache directory exists, delete all files contained within
     '''
-    
+    folder = 'cache'
+    if os.path.exists(folder):
+        for filename in os.listdir(folder):
+            file_path = os.path.join(folder, filename)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+            except Exception as e:
+                print('Failed to delete %s. Reason: %s' % (file_path, e))
+
+def read_turbiscan(path):
+    '''
+    Grab all files from the specified directory, if any are excel files write them to the cache directory as .csv files. If they are .csv files, copy them to cache.
+    '''
+
+    # If the cache directory has been deleted, create it again
+    if not os.path.exists('cache'):
+        os.mkdir('cache')
+        
+    directory = os.listdir(path)
+    name = 'excel'
+    num = 1
+    for fid in directory:
+        old_fid = os.path.join(path, fid)
+        
+        if os.path.splitext(old_fid)[-1] == '.xlsx':
+            df = pd.read_excel(old_fid)
+            new_name = name + str(num) + '.csv'
+            new_fid = os.path.join('cache', new_name)
+            num += 1
+            df.to_csv(new_fid, index = False)
+
+        elif os.path.splitext(old_fid)[-1] == '.csv':
+            new_fid = os.path.join('cache', fid)
+            os.path.copy(old_fid, new_fid)
+
+def get_trans_back():
+    '''
+    Collects all files from the cache directory and parse out the transmission and backscattering data.
+    '''
     def process_cols(col):
         '''
-        Function to parse the hours, minutes and seconds from the raw turbiscan output files
+        Helper function to separate the time-stamped entries
         '''
         times = []
         names = []
-
+        
         for ind in col:
             items = ind.split()
             names.append(items[0])
             hms = items[-1].split(':')
-
-            hours = int(hms[0][:-1])
-            mins = int(hms[1][:-1])
-            seconds = float(hms[2][:-1])
-
-            seconds_scaled = round(seconds/60)
-            hours_scaled = hours * 60
-
-            time = hours_scaled + mins + seconds_scaled
-            times.append(time)
-
-        df = pd.DataFrame({'sampleid':names, 'minutes':times})
-
-        return df
-    
-    if training:
-        path_raw = 'raw turbiscan data'
-    else:
-        path_raw = 'run files'
+            
+            time = 0 # time is given in minutes
+            
+            for entry in range(len(hms)):
+                if 'd' in hms[entry]:
+                    days = int(hms[entry][:-1])
+                    time += days * 60 * 24
+                elif 'h' in hms[entry]:
+                    hours = int(hms[entry][:-1])
+                    time += hours * 60
+                elif 'm' in hms[entry]:
+                    mins = int(hms[entry][:-1])
+                    time += mins
+                elif 's' in hms[entry]:
+                    seconds = int(hms[entry][:-1])
+                    time += round(seconds/60)
         
-    dir1 = os.listdir(path_raw)
-    data = []
+            times.append(time)
+        
+        df = pd.DataFrame({'sampleid':names, 'minutes':times})
+        
+        return df
+
+    folder = 'cache'
+    list_dir = os.listdir(folder)
+    data = [pd.read_csv(os.path.join(folder,x)) for x in list_dir]
     
-    # Check each file in the directory to see if they are an excel or csv file and read those in, otherwise ignore.
-    for fid in dir1:
-        path = os.path.join(os.getcwd(), path_raw, fid)
-        if os.path.splitext(path)[-1] == '.xlsx':
-            df = pd.read_excel(path)
-        elif os.path.splitext(path)[-1] == '.csv':
-            df = pd.read_csv(path)
-        else:
-            df = None
-
-        if df is not None:
-            transmit = 1
-            back = 2
-            data.append(df)
-
+    transmit = 1
+    back = 2
     trans_data = [df.columns[transmit+3*i] for df in data for i in range(int(df.shape[1]/3))]
     back_data = [df.columns[back+3*i] for df in data for i in range(int(df.shape[1]/3))]
-        
     combined_data = pd.concat(data, axis=1)
     combined_data.fillna(value = 0)
-
     combined_data = combined_data.T
     
     trans_df = combined_data.loc[trans_data, :].reset_index()
     trans_df = pd.concat([process_cols(trans_df['index']), trans_df], axis=1)
     trans_df.drop('index', axis=1, inplace = True)
-    trans_df.fillna(0, inplace=True)
     
     back_df = combined_data.loc[back_data, :].reset_index()
     back_df = pd.concat([process_cols(back_df['index']), back_df], axis=1)
     back_df.drop('index', axis=1, inplace = True)
-    back_df.fillna(0, inplace=True)
+    
+    results = (back_df, trans_df)
 
-    trans_df.set_index('sampleid', inplace=True)
-    back_df.set_index('sampleid', inplace=True)
-    
-    results = (trans_df, back_df)
-    
     return results
 
 def calc_auc(data):
     '''
     Calculate the area under the curve (AUC) of each spectra vector
     '''
-    auc_x = [int(x) for x in data.columns[1:].values]
-    spectra_auc = data.apply(lambda x: metrics.auc(auc_x,x[1:]), axis=1)
+    auc_x = [int(x) for x in data.columns[2:].values]
+    spectra_auc = data.apply(lambda x: metrics.auc(auc_x,x[2:]), axis=1)
     spectra_auc.name = 'auc'
-    new_df = pd.concat([data['minutes'], spectra_auc],axis=1)
-    new_df = new_df.pivot(columns = 'minutes', values = 'auc')
-        
+    new_df = pd.concat([data[['sampleid','minutes']], spectra_auc],axis=1)
+    new_df = new_df.pivot(index = 'sampleid', columns = 'minutes', values = 'auc')
+
     return new_df
 
 
